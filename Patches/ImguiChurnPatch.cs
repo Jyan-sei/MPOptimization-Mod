@@ -6,19 +6,25 @@ using UnityEngine;
 namespace KrokMPOptimization2;
 
 [HarmonyPatch(typeof(UIBullshit), "_GUI_DoTexturesForMPUserInterface")]
-// skips redundant IMGUI skin, overlay, and in-world UI work when nothing changed.
 internal static class ImguiSkinSkipPatch
 {
 	private static FieldInfo _recalc;
 	private static float _lastScale = float.NaN;
 	private static int _lastW = -1;
 	private static int _lastH = -1;
+	private static bool _stamped;
 	internal static bool SkipThisSetSkin;
+	internal static int StampCount;
+	internal static int SkipCount;
+	internal static int ReasonOpen;
+	internal static int ReasonScale;
+	internal static int ReasonFirst;
 
 	static void Prefix()
 	{
 		SkipThisSetSkin = false;
-		if (Plugin.SkipIdleSkinRebuild == null || !Plugin.SkipIdleSkinRebuild.Value)
+		if (Plugin.UiOptimizationExperimental == null || !Plugin.UiOptimizationExperimental.Value ||
+		    Plugin.SkipIdleSkinRebuild == null || !Plugin.SkipIdleSkinRebuild.Value)
 			return;
 
 		_recalc ??= AccessTools.Field(typeof(UIBullshit), "_recalculate_skin");
@@ -29,17 +35,68 @@ internal static class ImguiSkinSkipPatch
 		bool scaleChanged = float.IsNaN(_lastScale)
 		                    || Mathf.Abs(scale - _lastScale) > 0.0001f
 		                    || w != _lastW
-		                    || h != _lastH;
+		                    || h != _lastH
+		                    || recalc;
+		bool uiOpen = IsMpUiOpen();
+		bool first = !_stamped;
 
-		if (recalc || scaleChanged)
+		if (uiOpen || scaleChanged || first)
 		{
+			if (uiOpen)
+				ReasonOpen++;
+			else if (scaleChanged)
+				ReasonScale++;
+			else
+				ReasonFirst++;
 			_lastScale = scale;
 			_lastW = w;
 			_lastH = h;
+			_stamped = true;
+			StampCount++;
 			return;
 		}
 
 		SkipThisSetSkin = true;
+		SkipCount++;
+	}
+
+	internal static bool IsMpUiOpen()
+	{
+		if (UIMainMenu.IsOpen() || UIMainMenu.mainmenu_open)
+			return true;
+		try
+		{
+			if (Con.IsConsoleOpen())
+				return true;
+		}
+		catch
+		{
+		}
+		try
+		{
+			if (GUILayout_DropdownMenu.isOpen)
+				return true;
+		}
+		catch
+		{
+		}
+		if (!KrokoshaScavMultiplayer.IsNetworkActiveAndIsWorldGenerated())
+			return true;
+		return false;
+	}
+
+	internal static void ConsumeProbe(out int stamp, out int skip, out int open, out int scale, out int first)
+	{
+		stamp = StampCount;
+		skip = SkipCount;
+		open = ReasonOpen;
+		scale = ReasonScale;
+		first = ReasonFirst;
+		StampCount = 0;
+		SkipCount = 0;
+		ReasonOpen = 0;
+		ReasonScale = 0;
+		ReasonFirst = 0;
 	}
 }
 
@@ -71,7 +128,8 @@ internal static class ImguiInGameUiDedupPatch
 {
 	static bool Prefix()
 	{
-		if (Plugin.DeduplicateInGameUi == null || !Plugin.DeduplicateInGameUi.Value)
+		if (Plugin.UiOptimizationExperimental == null || !Plugin.UiOptimizationExperimental.Value ||
+		    Plugin.DeduplicateInGameUi == null || !Plugin.DeduplicateInGameUi.Value)
 			return true;
 		if (ImguiInGameUiResetPatch.InGameUiCalls <= 0)
 		{
@@ -81,102 +139,5 @@ internal static class ImguiInGameUiDedupPatch
 
 		MemoryTelemetry.HitUiDedup();
 		return false;
-	}
-}
-
-[HarmonyPatch(typeof(KrokoshaScavMultiplayer), "_GUI_RenderMainGUI")]
-internal static class ImguiCoopOverlaySkipPatch
-{
-	static bool Prefix()
-	{
-		if (Plugin.ShowCoopOverlay != null && Plugin.ShowCoopOverlay.Value)
-			return true;
-		if (Plugin.VerboseLogging != null && Plugin.VerboseLogging.Value)
-			return true;
-
-		MemoryTelemetry.HitOverlaySkip();
-		return false;
-	}
-}
-
-internal static class CatPatchStyleCachePatch
-{
-	private static GUIStyle _cached;
-	private static float _scale = float.NaN;
-	private static int _skinId;
-	private static int _width;
-
-	internal static bool Prefix(ref GUIStyle __result)
-	{
-		float scale = UIBullshit.uiScale;
-		int skinId = GUI.skin != null ? GUI.skin.GetInstanceID() : 0;
-		if (_cached != null
-		    && !float.IsNaN(_scale)
-		    && Mathf.Abs(scale - _scale) < 0.0001f
-		    && skinId == _skinId
-		    && Screen.width == _width)
-		{
-			__result = _cached;
-			MemoryTelemetry.HitCatStyle();
-			return false;
-		}
-
-		return true;
-	}
-
-	internal static void Postfix(GUIStyle __result)
-	{
-		if (__result == null)
-			return;
-		_cached = __result;
-		_scale = UIBullshit.uiScale;
-		_skinId = GUI.skin != null ? GUI.skin.GetInstanceID() : 0;
-		_width = Screen.width;
-	}
-}
-
-internal static class CatPatchMenuSkipPatch
-{
-	internal static bool Prefix()
-	{
-		if (Plugin.SkipHiddenCatPatchMenu != null && !Plugin.SkipHiddenCatPatchMenu.Value)
-			return true;
-		if (ShouldShowMenuButton())
-			return true;
-
-		MemoryTelemetry.HitCatMenuSkip();
-		return false;
-	}
-
-	internal static bool ShouldShowMenuButton()
-	{
-		try
-		{
-			if (IsBaseRunSettingsOpen())
-				return false;
-			if (UIBullshit.IsAnyMenuOpen())
-				return true;
-			if (UIMainMenu.mainmenu_open || UIMainMenu.IsOpen())
-				return true;
-			return PlayerCamera.main == null;
-		}
-		catch
-		{
-			return true;
-		}
-	}
-
-	private static bool IsBaseRunSettingsOpen()
-	{
-		try
-		{
-			return PreRunScript.instance != null
-			       && PreRunScript.instance.runSettingsScreen != null
-			       && PreRunScript.instance.runSettingsScreen.activeInHierarchy;
-		}
-		catch
-		{
-			return false;
-		}
 	}
 }

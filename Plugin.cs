@@ -11,6 +11,7 @@ namespace KrokMPOptimization2;
 
 [BepInPlugin(PluginInfo.GUID, PluginInfo.Name, PluginInfo.Version)]
 [BepInDependency("KrokoshaCasualtiesMP", BepInDependency.DependencyFlags.HardDependency)]
+[BepInDependency("meow.catpatch", BepInDependency.DependencyFlags.SoftDependency)]
 // combines host sync scheduling, queue protection, client relief, and memory cleanup.
 public class Plugin : BaseUnityPlugin
 {
@@ -61,15 +62,14 @@ public class Plugin : BaseUnityPlugin
 	internal static ConfigEntry<float> ClientReliefRegistryThrottleScaleThreshold;
 
 	internal static ConfigEntry<bool> SkipIdleSkinRebuild;
-	internal static ConfigEntry<bool> DeduplicateInGameUi;
-	internal static ConfigEntry<bool> ShowCoopOverlay;
-	internal static ConfigEntry<bool> CompressPooling;
+		internal static ConfigEntry<bool> DeduplicateInGameUi;
+	internal static ConfigEntry<bool> UiOptimizationExperimental;
+		internal static ConfigEntry<bool> CompressPooling;
 	internal static ConfigEntry<bool> FixUnconsciousText;
 	internal static ConfigEntry<bool> PruneCoolSyncObjStates;
 	internal static ConfigEntry<bool> PruneSteamAvatars;
 	internal static ConfigEntry<bool> CoolSyncAllocPooling;
 	internal static ConfigEntry<bool> CoolSyncWriterPool;
-	internal static ConfigEntry<bool> SkipHiddenCatPatchMenu;
 	internal static ConfigEntry<float> HeapProbeSeconds;
 	internal static ConfigEntry<KeyCode> HeapProbeKey;
 	internal static ConfigEntry<bool> HeapProbeForceCollect;
@@ -77,6 +77,11 @@ public class Plugin : BaseUnityPlugin
 	internal static ConfigEntry<bool> DestroyUiTexturesOnResize;
 	internal static ConfigEntry<bool> DestroyLimbMaterials;
 	internal static ConfigEntry<bool> MemoryTelemetryEnabled;
+
+	internal static ConfigEntry<bool> ElderHiFiEnabled;
+	internal static ConfigEntry<int> ElderHiFiRateHz;
+	internal static ConfigEntry<float> ElderHiFiRadius;
+	internal static ConfigEntry<bool> SkipIdleCatPatchControllers;
 
 	internal static bool PinTimeoutSessionDisabled;
 	internal static bool StaticPinTimeoutSessionDisabled;
@@ -90,10 +95,12 @@ public class Plugin : BaseUnityPlugin
 	private Harmony _harmony;
 	private SyncProducerHost _producerHost;
 	private bool _hostArmed;
+	private float _probeAge;
 
 	private void Awake()
 	{
 		Log = Logger;
+		OptLog.Info($"[KrokMPOpt2] v{PluginInfo.Version}");
 
 		if (BepInEx.Bootstrap.Chainloader.PluginInfos.ContainsKey(V1Guid))
 		{
@@ -169,10 +176,10 @@ public class Plugin : BaseUnityPlugin
 			"unity incremental gc slice in ms (runtime only)");
 		SkipUnchangedObjects = Config.Bind("Skip", "SkipUnchangedObjects", true,
 			"skip packing unchanged objects on regular round-robin send");
-		DebugLog = Config.Bind("Telemetry", "DebugLog", true, "emit window telemetry line every window");
+		DebugLog = Config.Bind("Telemetry", "DebugLog", false, "emit window telemetry line every window");
 		TelemetryWindowSeconds = Config.Bind("Telemetry", "TelemetryWindowSeconds", 10f, "rolling stats window");
 		VerboseLogging = Config.Bind("Telemetry", "VerboseLogging", false, "first-hit event markers");
-		FrameTimingEnabled = Config.Bind("Profiler", "FrameTimingEnabled", true,
+		FrameTimingEnabled = Config.Bind("Profiler", "FrameTimingEnabled", false,
 			"measure wall-time per hot path (ms/frame)");
 		FrameTimingCsvEnabled = Config.Bind("Profiler", "FrameTimingCsvEnabled", false,
 			"append profiler windows to persistentdatapath/krokmpoptimization2/profiler.csv");
@@ -181,8 +188,8 @@ public class Plugin : BaseUnityPlugin
 			"skip krokmp imgui skin rebuild when scale/resolution unchanged");
 		DeduplicateInGameUi = Config.Bind("Memory", "DeduplicateInGameUi", true,
 			"drop the second in-world uiingame pass each ongui");
-		ShowCoopOverlay = Config.Bind("Memory", "ShowCoopOverlay", false,
-			"show krokmp last status / version overlay. off skips that imgui alloc");
+		UiOptimizationExperimental = Config.Bind("UI", "UiOptimizationExperimental", false,
+			"UI Optimization (experimental) - may shrink or break multiplayer menus and in-game UI. Set to false (default) to disable any feature that attempts to optimize UI calls, skin rebuilds, dedups, texture destroys, etc.");
 		CompressPooling = Config.Bind("Memory", "CompressPooling", true,
 			"reuse gzip/deflate scratch streams. still calls compresswriter so receivers can decompressreader");
 		FixUnconsciousText = Config.Bind("Memory", "FixUnconsciousText", true,
@@ -195,9 +202,7 @@ public class Plugin : BaseUnityPlugin
 			"reuse coolsync object lists, skip linq tolist/elementat/any, pool snapshots and bitset buffers");
 		CoolSyncWriterPool = Config.Bind("Memory", "CoolSyncWriterPool", true,
 			"reuse one netdatawriter in coolsync packandsend. does not replace net.createwriter globally");
-		SkipHiddenCatPatchMenu = Config.Bind("Memory", "SkipHiddenCatPatchMenu", true,
-			"skip catpatch host settings ongui / drawoverlay when no krok/pause menu showing the button");
-		HeapProbeSeconds = Config.Bind("Memory", "HeapProbeSeconds", 60f,
+		HeapProbeSeconds = Config.Bind("Memory", "HeapProbeSeconds", 0f,
 			"seconds between targeted heap probes (texture2d/material/tmp/steam/snaps). 0 = off");
 		HeapProbeKey = Config.Bind("Memory", "HeapProbeKey", KeyCode.F9,
 			"key that runs heap probe immediately. none disables hotkey");
@@ -209,25 +214,33 @@ public class Plugin : BaseUnityPlugin
 			"destroy cached ui texture2ds before resizeguitextures clears them");
 		DestroyLimbMaterials = Config.Bind("Memory", "DestroyLimbMaterials", true,
 			"destroy per-limb instance materials when limb destroyed");
-		MemoryTelemetryEnabled = Config.Bind("Memory", "Telemetry", true,
+		MemoryTelemetryEnabled = Config.Bind("Memory", "Telemetry", false,
 			"first-hit + 10s memory counters. independent of host producer");
+
+		ElderHiFiEnabled = Config.Bind("ElderHiFi", "Enabled", true,
+			"high-frequency authoritative sideband sync for Elder Thornback (only to modded clients; falls back to object sync)");
+		ElderHiFiRateHz = Config.Bind("ElderHiFi", "RateHz", 25,
+			"send rate for elder snapshots (Hz)");
+		ElderHiFiRadius = Config.Bind("ElderHiFi", "Radius", 80f,
+			"only hi-fi when player within this distance");
+		SkipIdleCatPatchControllers = Config.Bind("CatPatch", "SkipIdleControllers", true,
+			"skip CatPatch emote/hug/kiss/dogpile/piggy/updater Update when that feature is idle");
 
 		bool hostEnabled = Enabled.Value;
 		bool clientReliefEnabled = ClientReliefEnabled.Value;
+		bool uiOptEnabled = UiOptimizationExperimental != null && UiOptimizationExperimental.Value;
 		bool memoryEnabled = MemoryTelemetryEnabled.Value
-		                     || SkipIdleSkinRebuild.Value
-		                     || DeduplicateInGameUi.Value
+		                     || (uiOptEnabled && SkipIdleSkinRebuild.Value)
+		                     || (uiOptEnabled && DeduplicateInGameUi.Value)
 		                     || CompressPooling.Value
 		                     || FixUnconsciousText.Value
 		                     || PruneCoolSyncObjStates.Value
 		                     || PruneSteamAvatars.Value
 		                     || CoolSyncAllocPooling.Value
 		                     || CoolSyncWriterPool.Value
-		                     || SkipHiddenCatPatchMenu.Value
 		                     || HeapProbeSeconds.Value > 0f
-		                     || DestroyUiTexturesOnResize.Value
-		                     || DestroyLimbMaterials.Value
-		                     || !ShowCoopOverlay.Value;
+		                     || (uiOptEnabled && DestroyUiTexturesOnResize.Value)
+		                     || DestroyLimbMaterials.Value;
 
 		if (!hostEnabled && !clientReliefEnabled && !memoryEnabled)
 		{
@@ -259,6 +272,11 @@ public class Plugin : BaseUnityPlugin
 		if (memoryEnabled)
 			MemoryBootstrap.Register(_harmony);
 
+		if (Plugin.ElderHiFiEnabled != null && Plugin.ElderHiFiEnabled.Value)
+			ElderHiFiSync.Register(_harmony);
+
+		CatPatchReactivityPatches.Apply(_harmony);
+
 		// Ghost-item guard runs on clients before the host-only early return.
 		// It also remains harmless when the expected stock signatures are absent.
 		try
@@ -271,6 +289,10 @@ public class Plugin : BaseUnityPlugin
 		{
 			Log.LogWarning($"[KrokMPOpt2] Failed to apply ObjectCullPatch: {ex.Message}");
 		}
+
+		// Always patch transport lifecycle so client-side announce and logging work even in client-only installs
+		_harmony.PatchAll(typeof(TransportLifecyclePatch));
+		_harmony.PatchAll(typeof(TransportEndPatch));
 
 		if (!hostEnabled)
 		{
@@ -294,8 +316,6 @@ public class Plugin : BaseUnityPlugin
 				$"forceSyncTimeout={ForceSyncHeadTimeoutSeconds.Value:F0}s gcSliceMs={GcSliceMs.Value:F1} " +
 				$"lanes hot/near/dorm={HotLaneCapPerTick.Value}/{NearLaneCapPerTick.Value}/{DormantLaneCapPerTick.Value}");
 
-			_harmony.PatchAll(typeof(TransportLifecyclePatch));
-			_harmony.PatchAll(typeof(TransportEndPatch));
 			_harmony.PatchAll(typeof(DisableFastSyncPatch));
 			_harmony.PatchAll(typeof(SuppressRegistryGatherPatch));
 			_harmony.PatchAll(typeof(DeadObjectDistancePatch));
@@ -313,18 +333,16 @@ public class Plugin : BaseUnityPlugin
 			_harmony.PatchAll(typeof(LayerQueueFlushPatch));
 			_harmony.PatchAll(typeof(SkipUnchangedPatch));
 			_harmony.PatchAll(typeof(AckDrainPatch));
-			_harmony.PatchAll(typeof(QueueTelemetryPatch));
-			_harmony.PatchAll(typeof(QueueDrainTelemetryPatch));
-			_harmony.PatchAll(typeof(PlayerDisconnectTelemetryPatch));
 			_harmony.PatchAll(typeof(PlayerJoinGracePatch));
-
-			FrameTimingPatches.Register(_harmony);
 			ContainerPolicyPatches.RegisterNetHandler();
 
 			QueueCapPatch.ApplyToAll("Awake");
 
 			_producerHost = gameObject.AddComponent<SyncProducerHost>();
 			_hostArmed = true;
+
+			if (ElderHiFiEnabled != null && ElderHiFiEnabled.Value)
+				ElderHiFiSync.EnsureTickHost(gameObject);
 
 			OptLog.Info(
 				$"[KrokMPOpt2] loaded v{PluginInfo.Version} - host producer armed; activates on MP transport start.");
@@ -337,16 +355,18 @@ public class Plugin : BaseUnityPlugin
 
 	private void Update()
 	{
-		MemoryBootstrap.TickLateCatPatch();
-		MemoryTelemetry.Tick(Time.unscaledDeltaTime);
-		HeapProbe.Tick(Time.unscaledDeltaTime);
+		_probeAge += Time.unscaledDeltaTime;
+		if (_probeAge >= 10f)
+		{
+			_probeAge = 0f;
+			LogFeatureProbes();
+		}
 
 		if (!_hostArmed || Plugin.Enabled == null || !Plugin.Enabled.Value)
 			return;
 
 		if (IsHostSessionActive)
 		{
-			OptStats.Tick(Time.unscaledDeltaTime);
 			JoinQueueGrace.Tick();
 		}
 
@@ -355,6 +375,28 @@ public class Plugin : BaseUnityPlugin
 			GcSlice.Apply(GcSliceMs.Value);
 			if (IsHostSessionActive)
 				QueueCapPatch.ApplyToAll("frame120");
+		}
+	}
+
+	private static void LogFeatureProbes()
+	{
+		if (UiOptimizationExperimental != null && UiOptimizationExperimental.Value)
+		{
+			ImguiSkinSkipPatch.ConsumeProbe(out int stamp, out int skip, out int open, out int scale, out int first);
+			OptLog.Info(
+				$"[KrokMPOpt2] imgui-skin stamp={stamp} skip={skip} reasonOpen={open} reasonScale={scale} reasonFirst={first}");
+		}
+
+		if (CatPatchReactivityPatches.Hooked)
+		{
+			CatPatchReactivityPatches.ConsumeProbe(
+				out int se, out int sh, out int sk, out int sd,
+				out int sp, out int su, out int run, out int fot,
+				out int sog, out int sov);
+			OptLog.Info(
+				$"[KrokMPOpt2] catpatch hooked=1 skipEmote={se} skipHug={sh} skipKiss={sk} " +
+				$"skipDogpile={sd} skipPiggy={sp} skipUpdater={su} runSocial={run} fotBody={fot} " +
+				$"skipOnGui={sog} skipOverlay={sov}");
 		}
 	}
 
@@ -376,5 +418,5 @@ internal static class PluginInfo
 {
 	public const string GUID = "com.local.krokmp.optimization2";
 	public const string Name = "KrokMPOptimization2";
-	public const string Version = "2.2.12";
+	public const string Version = "2.2.13";
 }

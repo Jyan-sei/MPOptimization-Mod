@@ -12,21 +12,31 @@ internal static class TransportLifecyclePatch
 
 	static void Postfix()
 	{
-		if (Plugin.Enabled == null || !Plugin.Enabled.Value)
+		bool mainEnabled = Plugin.Enabled != null && Plugin.Enabled.Value;
+		bool hiFiEnabled = Plugin.ElderHiFiEnabled != null && Plugin.ElderHiFiEnabled.Value;
+
+		if (!mainEnabled && !hiFiEnabled)
 			return;
 
 		if (Net.is_server)
 		{
-			QueueCapPatch.ApplyToAll("OnTransportStart");
-			ContainerPolicyPatches.RegisterNetHandler();
-			DirtyTracker.ClearAll();
+			if (mainEnabled)
+			{
+				QueueCapPatch.ApplyToAll("OnTransportStart");
+				ContainerPolicyPatches.RegisterNetHandler();
+				DirtyTracker.ClearAll();
+			}
+
+			if (hiFiEnabled)
+				ElderHiFiSync.EnsureTickHost();
 
 			if (!_loggedHostStart)
 			{
 				_loggedHostStart = true;
 				_loggedClientJoin = false;
-				OptLog.Info(
-					$"[KrokMPOpt2] host transport active - FastSync stripped, SyncProducer engaged (v{PluginInfo.Version}).");
+				if (mainEnabled)
+					OptLog.Info(
+						$"[KrokMPOpt2] host transport active - FastSync stripped, SyncProducer engaged (v{PluginInfo.Version}).");
 			}
 		}
 		else if (Net.is_client && !_loggedClientJoin)
@@ -43,9 +53,9 @@ internal static class TransportEndPatch
 {
 	static void Postfix()
 	{
-		if (Plugin.Enabled == null || !Plugin.Enabled.Value)
-			return;
-
-		DirtyTracker.ClearAll();
+		bool mainEnabled = Plugin.Enabled != null && Plugin.Enabled.Value;
+		if (mainEnabled)
+			DirtyTracker.ClearAll();
+		ElderHiFiSync.ClearElderCache();
 	}
 }

@@ -9,9 +9,6 @@ internal static class MemoryTelemetry
 {
 	private static long _skinSkip;
 	private static long _uiDedup;
-	private static long _overlaySkip;
-	private static long _catStyleHit;
-	private static long _catMenuSkip;
 	private static long _gzipPool;
 	private static long _deflatePool;
 	private static long _compressTinySkip;
@@ -28,9 +25,6 @@ internal static class MemoryTelemetry
 
 	private static int _skinSkipFirst;
 	private static int _uiDedupFirst;
-	private static int _overlaySkipFirst;
-	private static int _catStyleHitFirst;
-	private static int _catMenuSkipFirst;
 	private static int _gzipPoolFirst;
 	private static int _deflatePoolFirst;
 	private static int _compressTinySkipFirst;
@@ -52,9 +46,6 @@ internal static class MemoryTelemetry
 
 	internal static void HitSkinSkip() => Rate(ref _skinSkip, ref _skinSkipFirst, "skinSkip");
 	internal static void HitUiDedup() => Rate(ref _uiDedup, ref _uiDedupFirst, "uiDedup");
-	internal static void HitOverlaySkip() => Rate(ref _overlaySkip, ref _overlaySkipFirst, "overlaySkip");
-	internal static void HitCatStyle() => Rate(ref _catStyleHit, ref _catStyleHitFirst, "catStyleHit");
-	internal static void HitCatMenuSkip() => Rate(ref _catMenuSkip, ref _catMenuSkipFirst, "catMenuSkip");
 	internal static void HitGzipPool() => Rate(ref _gzipPool, ref _gzipPoolFirst, "gzipPool");
 	internal static void HitDeflatePool() => Rate(ref _deflatePool, ref _deflatePoolFirst, "deflatePool");
 	internal static void HitCompressTinySkip() => Rate(ref _compressTinySkip, ref _compressTinySkipFirst, "compressTinySkip");
@@ -122,9 +113,6 @@ internal static class MemoryTelemetry
 		_prevGc2 = gc2Now;
 		long skin = Interlocked.Exchange(ref _skinSkip, 0);
 		long dedup = Interlocked.Exchange(ref _uiDedup, 0);
-		long overlay = Interlocked.Exchange(ref _overlaySkip, 0);
-		long cat = Interlocked.Exchange(ref _catStyleHit, 0);
-		long catSkip = Interlocked.Exchange(ref _catMenuSkip, 0);
 		long gzip = Interlocked.Exchange(ref _gzipPool, 0);
 		long deflate = Interlocked.Exchange(ref _deflatePool, 0);
 		long tiny = Interlocked.Exchange(ref _compressTinySkip, 0);
@@ -138,18 +126,15 @@ internal static class MemoryTelemetry
 		long bitset = Interlocked.Exchange(ref _bitsetPool, 0);
 		long packWriter = Interlocked.Exchange(ref _packWriterReuse, 0);
 		long plrClone = Interlocked.Exchange(ref _plrPackSkipClone, 0);
-		int catHooked = MemoryBootstrap.CatPatchHooked ? 1 : 0;
 
 		OptLog.Info(
 			$"[KrokMPOpt2] memory gcMB={gcMb} monoUsedMB={monoUsed} monoHeapMB={monoHeap} unityAllocMB={unityAlloc} " +
 			$"gc0={gc0} gc1={gc1} gc2={gc2} " +
-			$"skinSkip={skin * inv:F1}/s uiDedup={dedup * inv:F1}/s overlaySkip={overlay * inv:F1}/s " +
-			$"catStyleHit={cat * inv:F1}/s catMenuSkip={catSkip * inv:F1}/s " +
+			$"skinSkip={skin * inv:F1}/s uiDedup={dedup * inv:F1}/s " +
 			$"gzipPool={gzip * inv:F1}/s deflatePool={deflate * inv:F1}/s compressTinySkip={tiny * inv:F1}/s unconsciousFix={unconscious * inv:F1}/s " +
 			$"coolListFill={coolList * inv:F1}/s snapRent={snap * inv:F1}/s bitsetPool={bitset * inv:F1}/s " +
 			$"packWriterReuse={packWriter * inv:F1}/s plrPackSkipClone={plrClone * inv:F1}/s " +
-			$"objstatePrune={objstates} avatarDestroy={avatars} texDestroy={tex} limbMatDestroy={limbs} " +
-			$"catPatchHooked={catHooked}");
+			$"objstatePrune={objstates} avatarDestroy={avatars} texDestroy={tex} limbMatDestroy={limbs}");
 	}
 
 	private static long SafeMb(Func<long> getBytes)

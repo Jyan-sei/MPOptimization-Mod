@@ -169,7 +169,8 @@ internal static class UiTextureDestroyPatch
 
 	static void Prefix()
 	{
-		if (Plugin.DestroyUiTexturesOnResize == null || !Plugin.DestroyUiTexturesOnResize.Value)
+		if (Plugin.UiOptimizationExperimental == null || !Plugin.UiOptimizationExperimental.Value ||
+		    Plugin.DestroyUiTexturesOnResize == null || !Plugin.DestroyUiTexturesOnResize.Value)
 			return;
 
 		_modified ??= AccessTools.Field(typeof(UIBullshit), "cached_modified_textures");
